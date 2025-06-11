@@ -1,0 +1,7 @@
+[project]
+name = "python-tools-mcp"
+version = "0.2.0"
+description = "Python development tools as an MCP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.9.3", "pydantic>=2.11.5", "uv>=0.1.19"]
