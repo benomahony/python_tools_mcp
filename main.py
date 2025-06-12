@@ -272,8 +272,12 @@ def pytest(
         bool, Field(default=False, description="Verbose output")
     ] = False,
     coverage: Annotated[
-        bool, Field(default=False, description="Run with coverage")
-    ] = False,
+        bool, Field(default=True, description="Run with coverage")
+    ] = True,
+    modules: Annotated[
+        list[str] | None,
+        Field(default=None, description="Specific modules to measure coverage for"),
+    ] = None,
     parallel: Annotated[
         bool,
         Field(default=False, description="Run tests in parallel with pytest-xdist"),
@@ -282,34 +286,90 @@ def pytest(
         str,
         Field(default="", description="Run tests matching markers (e.g., 'not slow')"),
     ] = "",
+    show_missing: Annotated[
+        bool, Field(default=True, description="Show missing lines in coverage report")
+    ] = True,
+    report_format: Annotated[
+        str,
+        Field(
+            default="term", description="Coverage report format (term, html, xml, json)"
+        ),
+    ] = "term",
+    threshold: Annotated[
+        int,
+        Field(
+            default=0, description="Minimum coverage percentage (0 means no checking)"
+        ),
+    ] = 0,
+    tests_dir: Annotated[
+        str,
+        Field(
+            default="",
+            description="Specific directory containing tests (if not in files)",
+        ),
+    ] = "",
     with_deps: Annotated[
         list[str] | None,
         Field(default_factory=list, description="Additional pytest plugins to include"),
     ] = None,
 ) -> str:
-    """Run tests with pytest.
+    """Run tests with pytest and optional module-specific coverage.
+
+    This tool combines general pytest test execution with module-specific coverage measurement.
+    Coverage reporting is enabled by default and can be configured to target specific modules.
 
     Examples:
-        Basic usage:
-            pytest(files=["."])
+        Basic test run without coverage:
+            pytest(files=["tests"], coverage=False)
 
-        With coverage:
-            pytest(files=["."], coverage=True)
+        With general coverage:
+            pytest(files=["tests"])  # Coverage is enabled by default
+
+        Module-specific coverage:
+            pytest(files=["tests"], modules=["my_package", "another_module"])
+
+        Custom report format:
+            pytest(files=["tests"], modules=["my_package"], report_format="html")
 
         With custom plugins:
-            pytest(files=["."], with_deps=["pytest-asyncio", "pytest-benchmark"])
+            pytest(files=["tests"], with_deps=["pytest-asyncio", "pytest-benchmark"])
     """
     project_root = get_project_root()
 
     flags = []
     if verbose:
         flags.append("-v")
-    if coverage:
-        flags.extend(["--cov", "--cov-report=term-missing"])
     if parallel:
         flags.append("-n auto")
     if markers:
         flags.extend(["-m", markers])
+
+    # Coverage configuration
+    if coverage:
+        # If specific modules are specified for coverage
+        if modules:
+            for module in modules:
+                flags.extend(["--cov", module])
+        else:
+            flags.append("--cov")  # General coverage
+
+        # Always use branch coverage
+        flags.append("--cov-branch")
+
+        # Configure coverage report format
+        if report_format == "term":
+            if show_missing:
+                flags.append("--cov-report=term-missing")
+            else:
+                flags.append("--cov-report=term")
+        else:
+            # For HTML/XML/JSON, we'll first use a terminal report during test execution
+            # and then generate the specific format in a separate command
+            flags.append("--cov-report=term")
+
+        # Add threshold check if a non-zero threshold is specified
+        if threshold > 0:
+            flags.extend(["--cov-fail-under", str(threshold)])
 
     cmd = ["uvx"]
 
@@ -325,9 +385,36 @@ def pytest(
             cmd.extend(["--with", dep])
 
     # Add the main command
-    cmd.extend(["pytest"] + flags + files)
+    cmd.append("pytest")
+    cmd.extend(flags)
 
+    # If tests_dir is specified and files is empty, use tests_dir
+    if tests_dir and not files:
+        cmd.append(tests_dir)
+    else:
+        cmd.extend(files)
+
+    # Run the tests with coverage
     result = run_command(cmd, cwd=project_root)
+
+    # For non-terminal formats or additional reports, we may need a separate command
+    if coverage and result.success and report_format != "term":
+        # For HTML, XML, or JSON reports
+        report_cmd = ["uvx", "coverage"]
+        if report_format == "html":
+            report_cmd.append("html")
+        elif report_format == "xml":
+            report_cmd.append("xml")
+        elif report_format == "json":
+            report_cmd.append("json")
+
+        report_result = run_command(report_cmd, cwd=project_root)
+
+        # Combine the results
+        output = f"Test Execution:\n{format_result(cmd, result)}\n\n"
+        output += f"Coverage Report:\n{format_result(report_cmd, report_result)}"
+        return output
+
     return format_result(cmd, result)
 
 
@@ -611,27 +698,61 @@ def coverage_report(
 
 
 @mcp.tool()
-def pdoc(
-    modules: Annotated[list[str], Field(description="Modules to document")],
-    output_dir: Annotated[
-        str, Field(default="docs", description="Output directory")
-    ] = "docs",
-    format_type: Annotated[
-        str, Field(default="html", description="Output format (html, pdf)")
-    ] = "html",
+def coverage_check(
+    modules: Annotated[
+        list[str], Field(description="Python modules or packages to check coverage for")
+    ],
+    tests_path: Annotated[
+        str, Field(default="tests", description="Directory containing tests")
+    ] = "tests",
+    threshold: Annotated[
+        int,
+        Field(
+            default=80, description="Minimum coverage percentage to consider as good"
+        ),
+    ] = 80,
+    show_missing: Annotated[
+        bool, Field(default=True, description="Show missing lines in the report")
+    ] = True,
+    fail_under: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="Exit with non-zero status if coverage is below threshold",
+        ),
+    ] = False,
+    include_branches: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Branch coverage is always enabled (kept for backward compatibility)",
+        ),
+    ] = True,
+    report_format: Annotated[
+        str, Field(default="term", description="Output format (term, html, xml, json)")
+    ] = "term",
 ) -> str:
-    """Generate API documentation with pdoc."""
-    project_root = get_project_root()
+    """
+    [DEPRECATED] Use pytest() with modules parameter instead.
 
-    cmd = ["uvx", "pdoc"]
-    if format_type == "html":
-        cmd.extend(["--html", "--output-dir", output_dir])
-    elif format_type == "pdf":
-        cmd.extend(["--pdf"])
+    This function is deprecated and will be removed in a future version.
+    Please use the pytest() function with the modules parameter:
 
-    cmd.extend(modules)
-    result = run_command(cmd, cwd=project_root)
-    return format_result(cmd, result)
+    Instead of:
+        coverage_check(modules=["my_package"], tests_path="tests", report_format="html")
+
+    Use:
+        pytest(files=["tests"], modules=["my_package"], report_format="html")
+    """
+    # Forward to enhanced pytest function
+    return pytest(
+        files=[tests_path],
+        modules=modules,
+        coverage=True,
+        report_format=report_format,
+        show_missing=show_missing,
+        threshold=threshold if fail_under else 0,
+    )
 
 
 @mcp.tool()
@@ -798,44 +919,68 @@ def semgrep(
 
 
 @mcp.tool()
-def deptry(
-    exclude: Annotated[
-        list[str], Field(default_factory=list, description="Patterns to exclude")
-    ],
-    root: Annotated[
-        str, Field(default=".", description="Root directory to check")
-    ] = ".",
-    ignore_notebooks: Annotated[
-        bool, Field(default=True, description="Ignore Jupyter notebooks")
+def coverage_analyze(
+    show_missing: Annotated[
+        bool, Field(default=True, description="Show missing lines")
     ] = True,
-    ignore_missing: Annotated[
-        bool, Field(default=False, description="Ignore missing dependencies")
-    ] = False,
+    format_type: Annotated[
+        str, Field(default="term", description="Report format (term, html, xml, json)")
+    ] = "term",
+    module_filter: Annotated[
+        str, Field(default="", description="Filter report to specific module(s)")
+    ] = "",
+    sort_by: Annotated[
+        str,
+        Field(
+            default="cover", description="Sort order (cover, name, stmts, miss, branch)"
+        ),
+    ] = "cover",
 ) -> str:
-    """Find unused dependencies with deptry."""
+    """
+    Analyze existing coverage data without running tests.
+
+    This tool analyzes coverage data that was previously collected by running tests with coverage.
+    It's useful when you've already run tests with the coverage_check tool or when you have existing
+    coverage data that you want to analyze in different ways. Branch coverage data is included
+    by default.
+
+    Examples:
+        Basic usage:
+            coverage_analyze()
+
+        Show report sorted by filename:
+            coverage_analyze(sort_by="name")
+
+        Generate HTML report:
+            coverage_analyze(format_type="html")
+
+        Filter report to specific module:
+            coverage_analyze(module_filter="my_package.module")
+    """
     project_root = get_project_root()
 
-    cmd = ["uvx", "--with", "deptry", "deptry", root]
+    if format_type == "html":
+        cmd = ["uvx", "coverage", "html"]
+    elif format_type == "xml":
+        cmd = ["uvx", "coverage", "xml"]
+    elif format_type == "json":
+        cmd = ["uvx", "coverage", "json"]
+    else:  # Default to term
+        cmd = ["uvx", "coverage", "report"]
 
-    if ignore_notebooks:
-        cmd.append("--ignore-notebooks")
+        if show_missing:
+            cmd.append("--show-missing")
 
-    if ignore_missing:
-        cmd.append("--ignore-missing")
+        # Add sorting option
+        if sort_by:
+            cmd.extend(["--sort", sort_by])
 
-    for pattern in exclude:
-        cmd.extend(["--exclude", pattern])
+        # Add module filter if provided
+        if module_filter:
+            cmd.append(module_filter)
 
     result = run_command(cmd, cwd=project_root)
-    # Note that deptry returns non-zero exit codes when it finds issues,
-    # which doesn't necessarily indicate a tool failure
-    formatted_result = format_result(cmd, result)
-    if result.returncode != 0 and "dependency issues" in result.stderr + result.stdout:
-        return formatted_result.replace(
-            "❌ Command failed", "⚠️ Dependencies issues found"
-        )
-
-    return formatted_result
+    return format_result(cmd, result)
 
 
 def run_server():
