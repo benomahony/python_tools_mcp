@@ -27,16 +27,11 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          uv pip install build hatchling twine
+          uv sync
 
       - name: Build package
         run: |
-          uv run python -m build
-
-      - name: Check package
-        run: |
-          uv run twine check dist/*
+          uv build
 
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-

@@ -23,7 +23,7 @@ uv sync
 Start the server:
 
 ```bash
-uvx python_tools_mcp
+uvx python-tools-mcp
 ```
 
 Then use the tools in your MCP-compatible application.
@@ -40,4 +40,3 @@ Then use the tools in your MCP-compatible application.
 ## License
 
 MIT
-
